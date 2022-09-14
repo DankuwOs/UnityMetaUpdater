@@ -110,7 +110,7 @@ public class UnityMetaUpdater
                             break;
                         else
                         {
-                            guid += line[i];
+                            guid += line[i]; 
                         }
                     }
                     
@@ -128,8 +128,9 @@ public class UnityMetaUpdater
         {
             foreach (var key in metaAndScriptsToUpdate)
             {
-                if (key.Key.Contains(Path.GetFileName(meta.Key)))
+                if (Path.GetFileName(key.Key) == Path.GetFileName(meta.Key))
                 { 
+                    Console.WriteLine($"{Path.GetFileName(key.Key)} == {Path.GetFileName(meta.Key)}");
                     if (!dictionary.ContainsKey(key.Value))
                         dictionary.Add(key.Value, meta.Value);
                 }
