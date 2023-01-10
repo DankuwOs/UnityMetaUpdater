@@ -20,9 +20,9 @@ public class UnityMetaUpdater
     /// </summary>
     static Dictionary<string, string> guidDictionary = new Dictionary<string, string>();
 
+    private static ProgressBar bar;
 
-
-    private static void Main(string[] args)
+    private static async Task Main(string[] args)
     {
         if (args.Length >= 2)
         {
@@ -35,29 +35,48 @@ public class UnityMetaUpdater
             Console.WriteLine("Usage: UnityMetaUpdater.exe <from directory> <to directory>");
             return;
         }
+        Console.WriteLine("Make sure you've backed up your unity projects, this program may just ruin your project. Press 'Y' to continue.");
+        
+        if (Console.ReadKey().Key != ConsoleKey.Y)
+            return;
 
-        Console.WriteLine($"Grabbing shit from {fromDirectory} & {toDirectory}");
+        bar = new ProgressBar();
+        Console.Write("\nGrabbing meta files... ");
+        
         var fromFiles = Directory.GetFiles(fromDirectory, "*.meta", SearchOption.AllDirectories);
+        bar.Report(0.25);
+        
         var toFiles = Directory.GetFiles(toDirectory, "*.meta", SearchOption.AllDirectories);
+        bar.Report(0.5);
         
         var fromPrefabs = Directory.GetFiles(fromDirectory, "*.prefab", SearchOption.AllDirectories);
+        bar.Report(0.75);
         
+        var fromScenes = Directory.GetDirectories(fromDirectory, "*.unity", SearchOption.AllDirectories);
+        bar.Report(1);
         
+        Console.Write("\nFinding GUIDs in files... ");
         
-        
+        bar = new ProgressBar();
+
         FromFiles(fromFiles);
         ToFiles(toFiles);
-
-        Console.WriteLine("Grabbed shit, comparing now...");
+        
+        Console.Write("\nComparing GUIDs in files... ");
+        
+        bar = new ProgressBar();
         
         guidDictionary = Compare();
         
-        Console.WriteLine("Compared.. Updating..");
+        Console.Write("\nUpdating files... ");
+        
+        bar = new ProgressBar();
         
         UpdateMeta();
         UpdatePrefabs(fromPrefabs);
+        UpdateScenes(fromScenes);
         
-        Console.WriteLine("Finished updating.");
+        Console.WriteLine("\nFinished updating!");
     }
     
     
@@ -65,58 +84,56 @@ public class UnityMetaUpdater
 
     private static void FromFiles(string[] fromFiles)
     {
-        foreach (var file in fromFiles)
+        for (var index = 0; index < fromFiles.Length; index++)
         {
+            bar?.Report(((double) index / fromFiles.Length) / 2);
+
+            var file = fromFiles[index];
             var lines = File.ReadAllLines(file);
             foreach (var line in lines)
             {
-                if (line.Contains("guid: "))
-                {
-                    var start = line.IndexOf("guid: ");
-                    var guid = "";
-                    for (int i = start + 6; i < line.Length; i++)
-                    {
-                        if (line[i].Equals(" "))
-                            break;
-                        else
-                        {
-                            guid += line[i];
-                        }
-                    }
+                if (!line.Contains("guid: ")) continue;
 
-                    if (!metaAndScriptsToUpdate.ContainsKey(file))
-                        metaAndScriptsToUpdate.Add(file, guid);
-                    
+                var start = line.IndexOf("guid: ");
+                var guid = "";
+                for (int i = start + 6; i < line.Length; i++)
+                {
+                    if (line[i].Equals(' '))
+                        break;
+
+                    guid += line[i];
                 }
+
+                if (!metaAndScriptsToUpdate.ContainsKey(file))
+                    metaAndScriptsToUpdate.Add(file, guid);
             }
         }
     }
 
     private static void ToFiles(string[] toFiles)
     {
-        foreach (var file in toFiles)
+        for (var index = 0; index < toFiles.Length; index++)
         {
+            bar?.Report(((double) index + 1 / toFiles.Length) / 2 + 0.5);
 
+            var file = toFiles[index];
             var lines = File.ReadAllLines(file);
             foreach (var line in lines)
             {
-                if (line.Contains("guid: "))
+                if (!line.Contains("guid: ")) continue;
+
+                var start = line.IndexOf("guid: ");
+                var guid = "";
+                for (int i = start + 6; i < line.Length; i++)
                 {
-                    var start = line.IndexOf("guid: ");
-                    var guid = "";
-                    for (int i = start + 6; i < line.Length; i++)
-                    {
-                        if (line[i].Equals(" "))
-                            break;
-                        else
-                        {
-                            guid += line[i]; 
-                        }
-                    }
-                    
-                    if (!metaAndScripts.ContainsKey(file))
-                        metaAndScripts.Add(file, guid);
+                    if (line[i].Equals(' '))
+                        break;
+
+                    guid += line[i];
                 }
+
+                if (!metaAndScripts.ContainsKey(file))
+                    metaAndScripts.Add(file, guid);
             }
         }
     }
@@ -124,16 +141,16 @@ public class UnityMetaUpdater
     private static Dictionary<string, string> Compare()
     {
         Dictionary<string, string> dictionary = new Dictionary<string, string>();
+        int i = 1;
+        int length = metaAndScripts.Count;
         foreach (var meta in metaAndScripts)
         {
-            foreach (var key in metaAndScriptsToUpdate)
+            bar?.Report(((double) i++ / length));
+            
+            foreach (var key in metaAndScriptsToUpdate.Where(key => Path.GetFileName(key.Key) == Path.GetFileName(meta.Key)))
             {
-                if (Path.GetFileName(key.Key) == Path.GetFileName(meta.Key))
-                { 
-                    Console.WriteLine($"{Path.GetFileName(key.Key)} == {Path.GetFileName(meta.Key)}");
-                    if (!dictionary.ContainsKey(key.Value))
-                        dictionary.Add(key.Value, meta.Value);
-                }
+                if (!dictionary.ContainsKey(key.Value))
+                    dictionary.Add(key.Value, meta.Value);
             }
         }
 
@@ -142,52 +159,56 @@ public class UnityMetaUpdater
 
     private static void UpdateMeta()
     {
+        int index = 0;
+        int length = metaAndScripts.Count;
         foreach (var meta in metaAndScripts)
         {
+            bar?.Report(((double) index++ / length) / 3);
             foreach (var key in metaAndScriptsToUpdate)
             {
-                if (key.Key.Contains(Path.GetFileName(meta.Key)))
+                
+                if (!key.Key.Contains(Path.GetFileName(meta.Key))) continue;
+                
+                var metaToUpdate = metaAndScriptsToUpdate[key.Key];
+                    
+                if (meta.Key == metaToUpdate) continue;
+                
+                
+                var lines = File.ReadAllLines(key.Key);
+                var newLines = new List<string>();
+                foreach (var line in lines)
                 {
-                    var metaToUpdate = metaAndScriptsToUpdate[key.Key];
-                    if (meta.Key != metaToUpdate)
+                    var newLine = line;
+                    if (line.Contains("guid: "))
                     {
-                        Console.WriteLine("Updating " + meta.Key + " from " + metaToUpdate  + " to " + meta.Value);
-                        var lines = File.ReadAllLines(key.Key);
-                        var newLines = new List<string>();
-                        foreach (var line in lines)
+                        var start = line.IndexOf("guid: ");
+                        var guid = "";
+                        for (int i = start + 6; i < line.Length; i++)
                         {
-                            var newLine = line;
-                            if (line.Contains("guid: "))
-                            {
-                                var start = line.IndexOf("guid: ");
-                                var guid = "";
-                                for (int i = start + 6; i < line.Length; i++)
-                                {
-                                    if (line.Substring(i, 1).Equals(" "))
-                                        break;
-                                    else
-                                    {
-                                        guid += line[i];
-                                    }
-                                }
-                                var replace = line.Replace(guid, meta.Value);
-                                newLine = replace;
-                            }
-                            newLines.Add(newLine);
+                            if (line.Substring(i, 1).Equals(" "))
+                                break;
+                            guid += line[i];
                         }
-                        File.WriteAllLines(key.Key, newLines);
-                        Console.WriteLine("attempting to write to: " +  key.Key);
+                        var replace = line.Replace(guid, meta.Value);
+                        newLine = replace;
                     }
+                    newLines.Add(newLine);
                 }
+                File.WriteAllLines(key.Key, newLines);
             }
         }
     }
     
     private static void UpdatePrefabs(string[] prefabs)
     {
+        int index = 0;
+        int length = prefabs.Length;
+        
         
         foreach (var prefab in prefabs)
         {
+            bar?.Report(((double) index++ / length) / 3 + 0.33333);
+            
             var lines = File.ReadAllLines(prefab);
             var newLines = new List<string>();
             foreach (var line in lines)
@@ -201,10 +222,7 @@ public class UnityMetaUpdater
                     {
                         if (line.Substring(i, 1).Equals(",") || line.Substring(i, 1).Equals(" "))
                             break;
-                        else
-                        {
-                            guid += line[i];
-                        }
+                        guid += line[i];
                     }
 
                     if (guidDictionary.ContainsKey(guid))
@@ -220,7 +238,48 @@ public class UnityMetaUpdater
                 newLines.Add(newLine);
             }
             File.WriteAllLines(prefab, newLines);
-            Console.WriteLine("attempting to write to: " +  prefab);
+        }
+    }
+    
+    private static void UpdateScenes(string[] scenes)
+    {
+        int index = 0;
+        int length = scenes.Length;
+        
+        
+        foreach (var scene in scenes)
+        {
+            bar?.Report(((double) index++ / length) / 3 + 0.66666);
+            
+            var lines = File.ReadAllLines(scene);
+            var newLines = new List<string>();
+            foreach (var line in lines)
+            {
+                var newLine = line;
+                if (line.Contains("guid: "))
+                {
+                    var start = line.IndexOf("guid: ");
+                    var guid = "";
+                    for (int i = start + 6; i < line.Length; i++)
+                    {
+                        if (line.Substring(i, 1).Equals(",") || line.Substring(i, 1).Equals(" "))
+                            break;
+                        guid += line[i];
+                    }
+
+                    if (guidDictionary.ContainsKey(guid))
+                    {
+                        var replace = line.Replace(guid, guidDictionary[guid]);
+                        newLine = replace;
+                    }
+                    else
+                    {
+                        newLine = line;
+                    }
+                }
+                newLines.Add(newLine);
+            }
+            File.WriteAllLines(scene, newLines);
         }
     }
 }
