@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Security.Cryptography;
+using System.Text;
 
 public class UnityMetaUpdater
 {
@@ -6,21 +7,44 @@ public class UnityMetaUpdater
     static string toDirectory = "None";
 
     /// <summary>
-    /// Path to file | guid
+    /// (File Path, Meta Path), GUID
     /// </summary>
-    static Dictionary<string, string> metaAndScripts = new Dictionary<string, string>();
+    /// <returns></returns>
+    private static Dictionary<Tuple<string, string>, string> fromFilesAndMeta =
+        new Dictionary<Tuple<string, string>, string>();
 
     /// <summary>
-    /// Path to file | guid
+    /// (File Path, Meta Path), GUID
     /// </summary>
-    static Dictionary<string, string> metaAndScriptsToUpdate = new Dictionary<string, string>();
-    
+    /// <returns></returns>
+    private static Dictionary<Tuple<string, string>, string> toFilesAndMeta =
+        new Dictionary<Tuple<string, string>, string>();
+
     /// <summary>
-    /// Previous GUID | New GUID
+    /// From GUID, To GUID
     /// </summary>
-    static Dictionary<string, string> guidDictionary = new Dictionary<string, string>();
+    private static Dictionary<string, string> guidDictionary = new Dictionary<string, string>();
+
+    /// <summary>
+    /// (MD5 Hash, GUID)
+    /// </summary>
+    /// <returns></returns>
+    private static Dictionary<string, string> hashDictionary = new Dictionary<string, string>();
 
     private static ProgressBar bar;
+
+    private static readonly string[] UnityExtensions = new[]
+    {
+        ".mat",
+        ".prefab",
+        ".asset",
+        ".unity",
+        ".anim",
+        ".controller",
+        ".mixer",
+        ".physicMaterial",
+        ".renderTexture"
+    };
 
     private static async Task Main(string[] args)
     {
@@ -32,92 +56,86 @@ public class UnityMetaUpdater
 
         if (fromDirectory == "None" || toDirectory == "None")
         {
-            Console.WriteLine("Usage: UnityMetaUpdater.exe <from directory> <to directory>");
+            Console.WriteLine(
+                "Usage: UnityMetaUpdater.exe <from directory> <to directory>");
             return;
         }
-        Console.WriteLine("Make sure you've backed up your unity projects, this program may just ruin your project. Press 'Y' to continue.");
-        
+
+        Console.WriteLine(
+            "Make sure you've backed up your unity projects, this program may just ruin your project. Press 'Y' to continue.");
+
+
         if (Console.ReadKey().Key != ConsoleKey.Y)
             return;
 
         bar = new ProgressBar();
-        Console.Write("\nGrabbing meta files... ");
-        
-        var fromFiles = Directory.GetFiles(fromDirectory, "*.meta", SearchOption.AllDirectories);
-        bar.Report(0.25);
-        
-        var toFiles = Directory.GetFiles(toDirectory, "*.meta", SearchOption.AllDirectories);
-        bar.Report(0.5);
-        
-        var fromPrefabs = Directory.GetFiles(fromDirectory, "*.prefab", SearchOption.AllDirectories);
-        bar.Report(0.75);
-        
-        var fromScenes = Directory.GetDirectories(fromDirectory, "*.unity", SearchOption.AllDirectories);
-        bar.Report(1);
-        
-        Console.Write("\nFinding GUIDs in files... ");
-        
-        bar = new ProgressBar();
+        Console.Write("\nGrabbing files... ");
 
-        FromFiles(fromFiles);
-        ToFiles(toFiles);
-        
+        var fromFiles = Directory.GetFiles(fromDirectory, "*.*", SearchOption.AllDirectories)
+            .Where(e => Path.GetExtension(e) != ".meta");
+        bar.Report(0.25);
+
+        var toFiles = Directory.GetFiles(toDirectory, "*.*", SearchOption.AllDirectories)
+            .Where(e => Path.GetExtension(e) != ".meta");
+        bar.Report(0.5);
+
+        var fromFileMetaTuples = GetMetaFiles(fromFiles.ToArray());
+        bar.Report(0.75);
+
+        var toFileMetaTuples = GetMetaFiles(toFiles.ToArray());
+        bar.Report(1);
+
+        bar = new ProgressBar();
+        Console.Write("\nFinding GUIDs in files... ");
+
+        GetGUIDsFromList(fromFileMetaTuples, out fromFilesAndMeta);
+        GetGUIDsFromList(toFileMetaTuples, out toFilesAndMeta, 1);
+
+
+        bar = new ProgressBar();
+        Console.Write("\nFinding hashes of all files...");
+        FillHashDictionary(toFilesAndMeta, out hashDictionary);
+
+        bar = new ProgressBar();
         Console.Write("\nComparing GUIDs in files... ");
-        
-        bar = new ProgressBar();
-        
+
         guidDictionary = Compare();
-        
-        Console.Write("\nUpdating files... ");
-        
+
+
         bar = new ProgressBar();
-        
+        Console.Write("\nUpdating files... ");
+
         UpdateMeta();
-        UpdatePrefabs(fromPrefabs);
-        UpdateScenes(fromScenes);
-        
+        UpdateFiles();
+
         Console.WriteLine("\nFinished updating!");
     }
-    
-    
-    
 
-    private static void FromFiles(string[] fromFiles)
+    private static List<Tuple<string, string>> GetMetaFiles(string[] files)
     {
-        for (var index = 0; index < fromFiles.Length; index++)
+        var fileMetaList = new List<Tuple<string, string>>();
+        foreach (var file in files)
         {
-            bar?.Report(((double) index / fromFiles.Length) / 2);
-
-            var file = fromFiles[index];
-            var lines = File.ReadAllLines(file);
-            foreach (var line in lines)
-            {
-                if (!line.Contains("guid: ")) continue;
-
-                var start = line.IndexOf("guid: ");
-                var guid = "";
-                for (int i = start + 6; i < line.Length; i++)
-                {
-                    if (line[i].Equals(' '))
-                        break;
-
-                    guid += line[i];
-                }
-
-                if (!metaAndScriptsToUpdate.ContainsKey(file))
-                    metaAndScriptsToUpdate.Add(file, guid);
-            }
+            var metaFile = $"{file}.meta";
+            if (File.Exists(metaFile))
+                fileMetaList.Add(new Tuple<string, string>(file, metaFile));
         }
+
+        return fileMetaList;
     }
 
-    private static void ToFiles(string[] toFiles)
-    {
-        for (var index = 0; index < toFiles.Length; index++)
-        {
-            bar?.Report(((double) index + 1 / toFiles.Length) / 2 + 0.5);
 
-            var file = toFiles[index];
-            var lines = File.ReadAllLines(file);
+    private static void GetGUIDsFromList(List<Tuple<string, string>> files,
+        out Dictionary<Tuple<string, string>, string> dictionary, int num = 0)
+    {
+        dictionary = new Dictionary<Tuple<string, string>, string>();
+        for (var index = 0; index < files.Count; index++)
+        {
+            // funny bar go number
+            bar?.Report((((double)index + 1) / files.Count) / 2 + (num == 1 ? 0.5 : 0));
+
+            var metaFile = files[index].Item2;
+            var lines = File.ReadAllLines(metaFile);
             foreach (var line in lines)
             {
                 if (!line.Contains("guid: ")) continue;
@@ -132,8 +150,9 @@ public class UnityMetaUpdater
                     guid += line[i];
                 }
 
-                if (!metaAndScripts.ContainsKey(file))
-                    metaAndScripts.Add(file, guid);
+
+                if (!dictionary.ContainsKey(files[index]))
+                    dictionary.Add(files[index], guid);
             }
         }
     }
@@ -142,39 +161,60 @@ public class UnityMetaUpdater
     {
         Dictionary<string, string> dictionary = new Dictionary<string, string>();
         int i = 1;
-        int length = metaAndScripts.Count;
-        foreach (var meta in metaAndScripts)
+        int length = fromFilesAndMeta.Count;
+
+        foreach (var fromFile in fromFilesAndMeta)
         {
-            bar?.Report(((double) i++ / length));
-            
-            foreach (var key in metaAndScriptsToUpdate.Where(key => Path.GetFileName(key.Key) == Path.GetFileName(meta.Key)))
+            bar?.Report((double)i++ / length / 2);
+            if (!UnityExtensions.Contains(Path.GetExtension(fromFile.Key.Item1)))
             {
-                if (!dictionary.ContainsKey(key.Value))
-                    dictionary.Add(key.Value, meta.Value);
+                continue;
+            }
+
+            // If the file is a .asset it might have a m_Name: line that is different based on the name of the file, compute it slightly differently.
+            string hash = Path.GetExtension(fromFile.Key.Item1) == ".asset" ? ComputeHashAsset(fromFile.Key.Item1) : ComputeHash(fromFile.Key.Item1);
+
+            if (!hashDictionary.ContainsKey(hash)) continue;
+            if (dictionary.ContainsKey(fromFile.Value)) continue;
+
+            dictionary.Add(fromFile.Value, hashDictionary[hash]);
+        }
+        
+        
+        i = 1;
+        length = toFilesAndMeta.Count;
+        foreach (var toFile in toFilesAndMeta)
+        {
+            bar?.Report((double)i++ / length / 2 + 0.5);
+
+            foreach (var fromFile in fromFilesAndMeta.Where(key => Path.GetFileName(key.Key.Item1) == Path.GetFileName(toFile.Key.Item1)))
+            {
+                var toValue = toFile.Value;
+
+                if (!dictionary.ContainsKey(fromFile.Value))
+                    dictionary.Add(fromFile.Value, toValue);
+
             }
         }
 
         return dictionary;
     }
 
+
     private static void UpdateMeta()
     {
-        int index = 0;
-        int length = metaAndScripts.Count;
-        foreach (var meta in metaAndScripts)
+        int index = 1;
+        int length = toFilesAndMeta.Count;
+        foreach (var toFile in toFilesAndMeta)
         {
-            bar?.Report(((double) index++ / length) / 3);
-            foreach (var key in metaAndScriptsToUpdate)
+            bar?.Report(((double) index++ / length) / 2);
+            foreach (var fromFile in fromFilesAndMeta)
             {
                 
-                if (!key.Key.Contains(Path.GetFileName(meta.Key))) continue;
-                
-                var metaToUpdate = metaAndScriptsToUpdate[key.Key];
-                    
-                if (meta.Key == metaToUpdate) continue;
-                
-                
-                var lines = File.ReadAllLines(key.Key);
+                if (!fromFile.Key.Item2.Contains(Path.GetFileName(toFile.Key.Item2))) continue;
+
+
+                var lines = File.ReadAllLines(fromFile.Key.Item2);
                 var newLines = new List<string>();
                 foreach (var line in lines)
                 {
@@ -189,27 +229,29 @@ public class UnityMetaUpdater
                                 break;
                             guid += line[i];
                         }
-                        var replace = line.Replace(guid, meta.Value);
+                        var replace = line.Replace(guid, toFile.Value);
                         newLine = replace;
                     }
                     newLines.Add(newLine);
                 }
-                File.WriteAllLines(key.Key, newLines);
+                File.WriteAllLines(fromFile.Key.Item2, newLines);
             }
         }
     }
-    
-    private static void UpdatePrefabs(string[] prefabs)
+
+    private static void UpdateFiles()
     {
-        int index = 0;
-        int length = prefabs.Length;
+        int index = 1;
+        int length = fromFilesAndMeta.Count;
         
         
-        foreach (var prefab in prefabs)
+        foreach (var file in fromFilesAndMeta)
         {
-            bar?.Report(((double) index++ / length) / 3 + 0.33333);
+            bar?.Report(((double) index++ / length) / 2 + 0.5);
+            if (!UnityExtensions.Contains(Path.GetExtension(file.Key.Item1)))
+                continue;
             
-            var lines = File.ReadAllLines(prefab);
+            var lines = File.ReadAllLines(file.Key.Item1);
             var newLines = new List<string>();
             foreach (var line in lines)
             {
@@ -237,49 +279,55 @@ public class UnityMetaUpdater
                 }
                 newLines.Add(newLine);
             }
-            File.WriteAllLines(prefab, newLines);
+            File.WriteAllLines(file.Key.Item1, newLines);
+        }
+    }
+
+    private static string ComputeHash(string filePath)
+    {
+        using (var md5 = MD5.Create())
+        {
+            var hash = md5.ComputeHash(File.ReadAllBytes(filePath));
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
     }
     
-    private static void UpdateScenes(string[] scenes)
+    private static string ComputeHashAsset(string filePath)
     {
-        int index = 0;
-        int length = scenes.Length;
-        
-        
-        foreach (var scene in scenes)
+        var reader = File.OpenText(filePath);
+        var builder = new StringBuilder();
+        while (reader.ReadLine() is { } line)
         {
-            bar?.Report(((double) index++ / length) / 3 + 0.66666);
-            
-            var lines = File.ReadAllLines(scene);
-            var newLines = new List<string>();
-            foreach (var line in lines)
-            {
-                var newLine = line;
-                if (line.Contains("guid: "))
-                {
-                    var start = line.IndexOf("guid: ");
-                    var guid = "";
-                    for (int i = start + 6; i < line.Length; i++)
-                    {
-                        if (line.Substring(i, 1).Equals(",") || line.Substring(i, 1).Equals(" "))
-                            break;
-                        guid += line[i];
-                    }
+            if (!line.StartsWith("  m_Name:"))
+                builder.AppendLine(line);
+        }
 
-                    if (guidDictionary.ContainsKey(guid))
-                    {
-                        var replace = line.Replace(guid, guidDictionary[guid]);
-                        newLine = replace;
-                    }
-                    else
-                    {
-                        newLine = line;
-                    }
-                }
-                newLines.Add(newLine);
-            }
-            File.WriteAllLines(scene, newLines);
+        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
+
+        using (var md5 = MD5.Create())
+        {
+            var hash = md5.ComputeHash(bytes);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
     }
+
+    private static void FillHashDictionary(Dictionary<Tuple<string, string>, string> files, out Dictionary<string, string> outList)
+    {
+        int i = 1;
+        int length = files.Count;
+        outList = new Dictionary<string, string>();
+        foreach (var pair in files)
+        {
+            bar?.Report((double)i++ / length);
+            var file = pair.Key.Item1;
+            var hash = Path.GetExtension(file) == ".asset" ? ComputeHashAsset(file) : ComputeHash(file);
+            
+            if (outList.ContainsKey(hash) || outList.ContainsValue(pair.Value))
+                continue;
+            
+            outList.Add(hash, pair.Value);
+        }
+    }
+
+    
 }
